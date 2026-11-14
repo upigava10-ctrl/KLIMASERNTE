@@ -1,0 +1,2 @@
+import earthaccess
+earthaccess.login()
