@@ -1,0 +1,55 @@
+import earthaccess
+import pandas as pd
+import numpy as np
+import xarray as xr
+import matplotlib.pyplot as plt
+import glob
+from NASADEM import NASADEM
+from rasters import Point, MultiPoint
+
+path = "/home/legion_user/Webpages/KLIMASERNTE/Backend/data/2026-11-14-d4d408"
+
+class GPMPrecipitation:
+    # Precipitation related data to location ( longitude and latitude )
+    # Training ready model with topographic data and precipitation data from GPM IMERG
+
+    def __init__(self, path):
+        self.path = path
+
+    def read_data(self):
+        for file in glob.iglob(f'{self.path}/*.HDF5'):
+            ds = xr.open_dataset(file, engine="netcdf4", group="Grid")
+            print(list(ds.variables.keys()))
+            return ds
+
+# Look for data around sonora, mexico
+def obtain_data():
+    earthaccess.login(persist=True)
+    results = earthaccess.search_data(
+        doi="10.5067/GPM/IMERG/3B-HH-L/07",
+        # Example: Filter for a specific region (e.g., Mexico) and date range
+        bounding_box=(-120, 15, -85, 35), 
+        temporal=("2023-01-01", "2024-01-05"),
+        count=10
+    )
+
+    # Download to a specific folder
+    files = earthaccess.download(results)
+    print(files)
+
+# Saved data are multiple folders depending on dates
+for file in glob.iglob(f'{path}/*.HDF5'):
+    ds = xr.open_dataset(file, engine="netcdf4", group="Grid")
+    print(list(ds.variables.keys()))
+
+# Earthaccess only once as to not repeat requests
+earthaccess.login()
+# Define coordenates based on the location of Sonora, Mexico
+point = Point(-99.1332, 19.4326) 
+
+# 3. Get the elevation
+try:
+    elevation = NASADEM.elevation_m(point)
+    print(f"Elevation at {point.y}, {point.x}: {elevation:.1f} meters")
+except Exception as e:
+    print(f"Error fetching elevation: {e}")
