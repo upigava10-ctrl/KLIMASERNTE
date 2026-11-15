@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-const CSV_DATA_URL = "/data/temperaturas.csv";
+// Lon,Lat,Elevation,Time,precipitation,randomError,probabilityLiquidPrecipitation,precipitation_cnt,precipitation_cnt_cond,MWprecipitation,MWprecipitation_cnt,MWprecipitation_cnt_cond,randomError_cnt
+const CSV_DATA_URL = "/home/legion_user/Webpages/KLIMASERNTE/Backend/data/sonora_precipitation/sonora_imerg_2023-01-02.csv";
 
 const SONORA_BOUNDS: [[number, number], [number, number]] = [
-  [26.2, -115.0],
-  [32.5, -108.0],
+  [26.5, -115.05],
+  [34.45, -108.45],
 ];
 
 type HeatPoint = [number, number, number];
@@ -254,33 +255,12 @@ export default function Dashboard() {
   const { MapContainer, TileLayer, useMap, createHeatLayer } = leafletDeps;
 
   return (
-    <section
-      style={{
-        width: "100%",
-        maxWidth: "900px",
-        margin: "0 auto",
-        padding: "20px",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: "12px",
-          marginBottom: "16px",
-        }}
-      >
+    <section className="w-full max-w-[900px] mx-auto p-5">
+      {/* Header Section */}
+      <div className="flex justify-between items-center flex-wrap gap-3 mb-4">
         <div>
-          <h2 style={{ margin: 0, color: "#1e293b" }}>Clima en Sonora</h2>
-          <p
-            style={{
-              margin: "4px 0 0 0",
-              color: "#64748b",
-              fontSize: "14px",
-            }}
-          >
+          <h2 className="m-0 text-slate-800 text-2xl font-bold">Clima en Sonora</h2>
+          <p className="mt-1 mb-0 text-slate-500 text-sm">
             Estado: {status}
           </p>
         </div>
@@ -289,14 +269,7 @@ export default function Dashboard() {
           <select
             value={selectedDate}
             onChange={(e) => setSelectedDate(e.target.value)}
-            style={{
-              padding: "8px 12px",
-              borderRadius: "8px",
-              border: "1px solid #cbd5e1",
-              backgroundColor: "#fff",
-              color: "#1e293b",
-              fontSize: "14px",
-            }}
+            className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
           >
             <option value="__AVG__">Promedio general por ubicación</option>
             {availableDates.map((d) => (
@@ -311,20 +284,15 @@ export default function Dashboard() {
         )}
       </div>
 
-      <div
-        style={{
-          borderRadius: "12px",
-          overflow: "hidden",
-          boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)",
-        }}
-      >
+      {/* Map Section */}
+      <div className="rounded-xl overflow-hidden shadow-md">
         <MapContainer
           bounds={SONORA_BOUNDS}
           maxBounds={SONORA_BOUNDS}
-          maxBoundsViscosity={1}
+          maxBoundsViscosity={10}
           minZoom={5}
-          scrollWheelZoom
-          style={{ height: "500px", width: "100%", zIndex: 0 }}
+          zoomControl={false}
+          className="h-[500px] w-full z-0"
         >
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -338,142 +306,44 @@ export default function Dashboard() {
         </MapContainer>
       </div>
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-          gap: "16px",
-          marginTop: "20px",
-        }}
-      >
-        <div
-          style={{
-            backgroundColor: "#ffffff",
-            padding: "16px",
-            borderRadius: "12px",
-            boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
-            borderTop: "4px solid #ef4444",
-            textAlign: "center",
-          }}
-        >
-          <p
-            style={{
-              margin: 0,
-              fontSize: "12px",
-              fontWeight: "600",
-              color: "#64748b",
-              textTransform: "uppercase",
-            }}
-          >
+      {/* Stats Grid Section */}
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-4 mt-5">
+        {/* Max Temp Card */}
+        <div className="bg-white p-4 rounded-xl shadow-sm border-t-4 border-red-500 text-center">
+          <p className="m-0 text-xs font-semibold text-slate-500 uppercase tracking-wide">
             Máxima
           </p>
-          <p
-            style={{
-              margin: "8px 0 0 0",
-              fontSize: "24px",
-              fontWeight: "700",
-              color: "#ef4444",
-            }}
-          >
+          <p className="mt-2 mb-0 text-2xl font-bold text-red-500">
             {stats.max.toFixed(1)}°C
           </p>
         </div>
 
-        <div
-          style={{
-            backgroundColor: "#ffffff",
-            padding: "16px",
-            borderRadius: "12px",
-            boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
-            borderTop: "4px solid #f59e0b",
-            textAlign: "center",
-          }}
-        >
-          <p
-            style={{
-              margin: 0,
-              fontSize: "12px",
-              fontWeight: "600",
-              color: "#64748b",
-              textTransform: "uppercase",
-            }}
-          >
+        {/* Avg Temp Card */}
+        <div className="bg-white p-4 rounded-xl shadow-sm border-t-4 border-amber-500 text-center">
+          <p className="m-0 text-xs font-semibold text-slate-500 uppercase tracking-wide">
             Promedio
           </p>
-          <p
-            style={{
-              margin: "8px 0 0 0",
-              fontSize: "24px",
-              fontWeight: "700",
-              color: "#f59e0b",
-            }}
-          >
+          <p className="mt-2 mb-0 text-2xl font-bold text-amber-500">
             {stats.avg.toFixed(1)}°C
           </p>
         </div>
 
-        <div
-          style={{
-            backgroundColor: "#ffffff",
-            padding: "16px",
-            borderRadius: "12px",
-            boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
-            borderTop: "4px solid #3b82f6",
-            textAlign: "center",
-          }}
-        >
-          <p
-            style={{
-              margin: 0,
-              fontSize: "12px",
-              fontWeight: "600",
-              color: "#64748b",
-              textTransform: "uppercase",
-            }}
-          >
+        {/* Min Temp Card */}
+        <div className="bg-white p-4 rounded-xl shadow-sm border-t-4 border-blue-500 text-center">
+          <p className="m-0 text-xs font-semibold text-slate-500 uppercase tracking-wide">
             Mínima
           </p>
-          <p
-            style={{
-              margin: "8px 0 0 0",
-              fontSize: "24px",
-              fontWeight: "700",
-              color: "#3b82f6",
-            }}
-          >
+          <p className="mt-2 mb-0 text-2xl font-bold text-blue-500">
             {stats.min.toFixed(1)}°C
           </p>
         </div>
 
-        <div
-          style={{
-            backgroundColor: "#ffffff",
-            padding: "16px",
-            borderRadius: "12px",
-            boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
-            borderTop: "4px solid #10b981",
-            textAlign: "center",
-          }}
-        >
-          <p
-            style={{
-              margin: 0,
-              fontSize: "12px",
-              fontWeight: "600",
-              color: "#64748b",
-              textTransform: "uppercase",
-            }}
-          >
+        {/* Records Card */}
+        <div className="bg-white p-4 rounded-xl shadow-sm border-t-4 border-emerald-500 text-center">
+          <p className="m-0 text-xs font-semibold text-slate-500 uppercase tracking-wide">
             Registros
           </p>
-          <p
-            style={{
-              margin: "8px 0 0 0",
-              fontSize: "24px",
-              fontWeight: "700",
-              color: "#10b981",
-            }}
-          >
+          <p className="mt-2 mb-0 text-2xl font-bold text-emerald-500">
             {stats.total}
           </p>
         </div>
