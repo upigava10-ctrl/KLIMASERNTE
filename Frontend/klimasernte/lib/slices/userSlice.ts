@@ -1,6 +1,6 @@
 import type { User } from "../models/user";
 
-export type AuthStatus = "loading" | "authenticated" | "unauthenticated";
+export type AuthStatus = "loading" | "identified" | "unidentified";
 
 export type UserSlice = {
   user: User | null;

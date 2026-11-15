@@ -3,15 +3,14 @@
 import { FormEvent, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { signInWithEmail } from "@/lib/supabase/auth";
 import { useBoundStore } from "@/lib/hooks/useBoundStore";
+import { getUserByEmail } from "@/lib/supabase/user";
 
 export default function LoginPage() {
   const router = useRouter();
   const setUser = useBoundStore((state) => state.setUser);
   const setAuthStatus = useBoundStore((state) => state.setAuthStatus);
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -22,9 +21,9 @@ export default function LoginPage() {
     setAuthStatus("loading");
 
     try {
-      const profile = await signInWithEmail(email, password);
+      const profile = await getUserByEmail(email);
       setUser(profile);
-      setAuthStatus("authenticated");
+      setAuthStatus("identified");
 
       const next = new URLSearchParams(window.location.search).get("next");
       const destination = next
@@ -39,7 +38,7 @@ export default function LoginPage() {
       router.refresh();
     } catch (caughtError) {
       setUser(null);
-      setAuthStatus("unauthenticated");
+      setAuthStatus("unidentified");
       setError(
         caughtError instanceof Error
           ? caughtError.message
@@ -59,13 +58,13 @@ export default function LoginPage() {
           </Link>
           <div className="my-12">
             <p className="mb-4 text-sm font-semibold uppercase tracking-[0.15em] text-[#c5d9ae]">
-              Welcome back
+              Find your profile
             </p>
             <h1 className="max-w-sm text-4xl font-semibold leading-tight sm:text-5xl">
               Better harvests start here.
             </h1>
             <p className="mt-5 max-w-sm leading-7 text-[#e2eadc]">
-              Sign in to continue to your Klimasernte account.
+              Continue to your Klimasernte profile.
             </p>
           </div>
           <p className="text-sm text-[#d3dfce]">
@@ -74,9 +73,10 @@ export default function LoginPage() {
         </div>
 
         <div className="p-8 sm:p-12">
-          <h2 className="text-2xl font-semibold">Sign in</h2>
+          <h2 className="text-2xl font-semibold">Find your profile</h2>
           <p className="mt-2 text-sm text-[#667365]">
-            Enter your account details to get started.
+            Enter your email to load your profile. This does not verify that you
+            own the email address.
           </p>
 
           <form className="mt-8 space-y-5" onSubmit={handleSubmit}>
@@ -98,25 +98,9 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium" htmlFor="password">
-                Password
-              </label>
-              <input
-                autoComplete="current-password"
-                className="w-full rounded-xl border border-[#d9e0d4] px-4 py-3 outline-none transition focus:border-[#527c4a] focus:ring-2 focus:ring-[#527c4a]/20"
-                id="password"
-                name="password"
-                onChange={(event) => setPassword(event.target.value)}
-                required
-                type="password"
-                value={password}
-              />
-            </div>
-
-            <div>
               <p className="text-sm text-[#667365]">
-                Farmer accounts are identified by the producer size saved in
-                your profile.
+                Enter the email address saved in your profile. This profile-only
+                lookup does not verify email ownership.
               </p>
             </div>
 
@@ -134,9 +118,18 @@ export default function LoginPage() {
               disabled={isSubmitting}
               type="submit"
             >
-              {isSubmitting ? "Signing in..." : "Sign in"}
+              {isSubmitting ? "Loading profile..." : "Continue"}
             </button>
           </form>
+          <p className="mt-6 text-center text-sm text-[#667365]">
+            New to Klimasernte?{" "}
+            <Link
+              className="font-semibold text-[#315e3e] hover:underline"
+              href="/auth/register"
+            >
+              Create a profile
+            </Link>
+          </p>
         </div>
       </section>
     </main>
