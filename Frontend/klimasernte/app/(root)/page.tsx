@@ -1,7 +1,9 @@
-import Dashboard from "./Dashboard";
+import MapaWrapper from "@/components/MapaWrapper";
 
 export default function Home() {
   return (
-    <Dashboard />
-  )
+    <main>
+      <MapaWrapper />
+    </main>
+  );
 }
