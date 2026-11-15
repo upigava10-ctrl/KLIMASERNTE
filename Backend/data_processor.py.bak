@@ -1,0 +1,105 @@
+"""Convenient public imports for the GPM IMERG data-processing functions."""
+
+import pandas as pd
+import glob
+import geopandas as gpd
+from shapely.geometry import Point
+
+from gpm_precipitation import (
+    IMERG_DOI,
+    IMERG_VARIABLES,
+    REQUIRED_IMERG_VARIABLES,
+    SONORA_BOUNDS,
+    download_imerg_data,
+    extract_imerg_dataframe,
+    get_sonora_precipitation_dataframe,
+    join_nasadem_elevation,
+    sample_nasadem_elevation,
+    write_daily_csvs,
+)
+
+__all__ = [
+    "IMERG_DOI",
+    "IMERG_VARIABLES",
+    "REQUIRED_IMERG_VARIABLES",
+    "SONORA_BOUNDS",
+    "download_imerg_data",
+    "extract_imerg_dataframe",
+    "get_sonora_precipitation_dataframe",
+    "join_nasadem_elevation",
+    "sample_nasadem_elevation",
+    "write_daily_csvs",
+]
+
+# download_imerg_data(
+#     start_date="2023-01-01",
+#     end_date="2026-01-01",
+#     output_directory="/home/legion_user/Webpages/KLIMASERNTE/Backend/data/3_year_imerg",
+#     count=-1
+# )
+
+# write_daily_csvs(
+#     get_sonora_precipitation_dataframe('/home/legion_user/Webpages/KLIMASERNTE/Backend/data/3_year_imerg'), 
+#     '/home/legion_user/Webpages/KLIMASERNTE/Backend/data/sonora_precipitation')
+
+'''
+    Cleanup of files and redundant data.
+'''
+
+# filepath = '/home/legion_user/Webpages/KLIMASERNTE/Backend/data/2023_parquet_training'
+# files = glob.glob(filepath + '/*.parquet')
+files = glob.glob(
+    '/home/legion_user/Webpages/KLIMASERNTE/Backend/data/sonora_precipitation/sonora_imerg_2025*.csv'
+    )
+
+# We have 365 days of data, therefore 365 files of elevation and precipitation for a given day. 
+# We can read them in and check the first few rows of each file to ensure that the data is correct.
+def convert_csv_to_parquet():
+    for f in files:
+        df = pd.read_csv(f)
+        print(df['Lon'].unique())
+        print(df['Lat'].unique())
+
+        return 
+
+        name = f.split('.')
+        name = name[0].split('/')
+        name = name[-1] + '.parquet'
+
+        df['Time'] = pd.to_datetime(df['Time'])
+        # df.to_parquet(
+        #     f'/home/legion_user/Webpages/KLIMASERNTE/Backend/data/2025_parquet_training/{name}',
+        #     compression='snappy',
+        #     index=False)
+
+convert_csv_to_parquet()
+
+
+
+def coastline():
+    # 1. Create your grid of coordinates
+    lons = [-115.05, -114.95, -114.85] # ... your full list
+    lats = [26.25, 26.35, 26.45]       # ... your full list
+    from itertools import product
+    coords = list(product(lons, lats))
+
+    # 2. Convert to a GeoDataFrame
+    df_grid = pd.DataFrame(coords, columns=['Lon', 'Lat'])
+    geometry = [Point(xy) for xy in zip(df_grid['Lon'], df_grid['Lat'])]
+    gdf_grid = gpd.GeoDataFrame(df_grid, geometry=geometry, crs="EPSG:4326")
+
+    # 3. Load a coastline shapefile (Natural Earth is built into geopandas)
+    #    We filter for North America / Mexico coastlines
+    world = gpd.read_file(gpd.datasets.get_path('naturalearth_lowres'))
+    mexico = world[world.name == 'Mexico']
+
+    # 4. Project to a metric CRS to calculate distance in meters/kilometers
+    #    EPSG:6372 is a good projection for Mexico
+    gdf_grid = gdf_grid.to_crs(epsg=6372)
+    mexico_coast = mexico.boundary.to_crs(epsg=6372)
+
+    # 5. Calculate the distance from each point to the coastline
+    #    (distance is calculated in meters, so divide by 1000 for km)
+    gdf_grid['dist_to_coast_km'] = gdf_grid.geometry.distance(mexico_coast.unary_union) / 1000
+
+    print(gdf_grid[['Lon', 'Lat', 'dist_to_coast_km']].head())
