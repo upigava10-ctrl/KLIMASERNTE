@@ -15,7 +15,10 @@ type MapMetric =
   | "temperature"
   | "maxTemperature"
   | "minTemperature"
-  | "humidity";
+  | "humidity"
+  | "soilMoisture"
+  | "leafWetness"
+  | "evapotranspiration";
 type Position = [number, number];
 type PolygonCoordinates = Position[][];
 type MultiPolygonCoordinates = PolygonCoordinates[];
@@ -49,6 +52,9 @@ interface WeatherMapRecord {
   max_temperature_c: number | null;
   min_temperature_c: number | null;
   relative_humidity_pct: number | null;
+  soil_moisture_index: number | null;
+  leaf_wetness_index: number | null;
+  evapotranspiration_mm: number | null;
 }
 
 interface WeatherMapResponse {
@@ -69,6 +75,21 @@ interface LocationOption {
   municipality_code: string;
   lat: number;
   lon: number;
+  grid_lat: number;
+  grid_lon: number;
+}
+
+interface MoistureSeriesPoint {
+  month: string;
+  soil_moisture_index: number | null;
+  leaf_wetness_index: number | null;
+  evapotranspiration_mm: number | null;
+}
+
+interface MoistureSeriesResponse {
+  start: string;
+  end: string;
+  series: MoistureSeriesPoint[];
 }
 
 interface LocationSeriesPoint {
@@ -159,11 +180,38 @@ function mapPointColor(metric: MapMetric, value: number, maxPrecipitation: numbe
       "#dc2626",
     ]);
   }
-  return interpolateColor(value, 0, 100, [
-    "#a16207",
-    "#eab308",
-    "#84cc16",
-    "#38bdf8",
+  if (metric === "humidity") {
+    return interpolateColor(value, 0, 100, [
+      "#a16207",
+      "#eab308",
+      "#84cc16",
+      "#38bdf8",
+      "#1d4ed8",
+    ]);
+  }
+  if (metric === "soilMoisture") {
+    return interpolateColor(value, 0, 1.5, [
+      "#fef3c7",
+      "#a3e635",
+      "#22c55e",
+      "#0284c7",
+      "#1e3a8a",
+    ]);
+  }
+  if (metric === "leafWetness") {
+    return interpolateColor(value, 0, 1, [
+      "#fef3c7",
+      "#bef264",
+      "#34d399",
+      "#0ea5e9",
+      "#1d4ed8",
+    ]);
+  }
+  return interpolateColor(value, 0, 12, [
+    "#fef3c7",
+    "#facc15",
+    "#fb923c",
+    "#0ea5e9",
     "#1d4ed8",
   ]);
 }
@@ -173,6 +221,9 @@ function mapMetricLabel(metric: MapMetric): string {
   if (metric === "maxTemperature") return "Temperatura máxima";
   if (metric === "minTemperature") return "Temperatura mínima";
   if (metric === "humidity") return "Humedad relativa";
+  if (metric === "soilMoisture") return "Índice de humedad del suelo (−5 cm)";
+  if (metric === "leafWetness") return "Humedad foliar";
+  if (metric === "evapotranspiration") return "Evapotranspiración";
   return "Precipitación estimada";
 }
 
@@ -185,6 +236,8 @@ function mapMetricUnit(metric: MapMetric): string {
     return "°C";
   }
   if (metric === "humidity") return "%";
+  if (metric === "soilMoisture" || metric === "leafWetness") return "índice";
+  if (metric === "evapotranspiration") return "mm/24 h";
   return "mm/día";
 }
 
@@ -198,6 +251,15 @@ function mapLegendGradient(metric: MapMetric): string {
   }
   if (metric === "humidity") {
     return "linear-gradient(90deg, #a16207, #eab308, #84cc16, #38bdf8, #1d4ed8)";
+  }
+  if (metric === "soilMoisture") {
+    return "linear-gradient(90deg, #fef3c7, #a3e635, #22c55e, #0284c7, #1e3a8a)";
+  }
+  if (metric === "leafWetness") {
+    return "linear-gradient(90deg, #fef3c7, #bef264, #34d399, #0ea5e9, #1d4ed8)";
+  }
+  if (metric === "evapotranspiration") {
+    return "linear-gradient(90deg, #fef3c7, #facc15, #fb923c, #0ea5e9, #1d4ed8)";
   }
   return "linear-gradient(90deg, #0284c7, #ea580c, #dc2626)";
 }
@@ -374,6 +436,200 @@ function locationLabel(location: LocationOption): string {
   return `${location.name} · ${location.type} · ${location.lat.toFixed(2)}, ${location.lon.toFixed(2)}`;
 }
 
+function previousMonth(month: string): string {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const date = new Date(Date.UTC(year, monthNumber - 2, 1));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function MoistureHistoryChart({
+  points,
+  locationName,
+  status,
+}: {
+  points: MoistureSeriesPoint[];
+  locationName: string;
+  status: string;
+}) {
+  const charts = [
+    {
+      key: "soil_moisture_index" as const,
+      label: "Humedad del suelo (−5 cm)",
+      color: "#15803d",
+      unit: "índice",
+    },
+    {
+      key: "leaf_wetness_index" as const,
+      label: "Humedad foliar",
+      color: "#0284c7",
+      unit: "índice",
+    },
+    {
+      key: "evapotranspiration_mm" as const,
+      label: "Evapotranspiración",
+      color: "#ea580c",
+      unit: "mm/24 h",
+    },
+  ];
+
+  return (
+    <article className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-base font-semibold text-slate-800">
+          Variables de humedad · {locationName}
+        </h3>
+        <p className="text-sm text-slate-500">{status}</p>
+      </div>
+      {points.length ? (
+        <div className="grid gap-3 md:grid-cols-3">
+          {charts.map((chart) => {
+            const values = points.map((point) => point[chart.key]);
+            const finiteValues = values.filter(
+              (value): value is number =>
+                value !== null && Number.isFinite(value)
+            );
+            const maximum = Math.max(...finiteValues, 0);
+            const minimum = Math.min(...finiteValues, 0);
+            const scaleMinimum = Math.min(0, minimum);
+            const scaleMaximum = maximum > scaleMinimum ? maximum * 1.1 : 1;
+            const width = 420;
+            const height = 150;
+            const left = 44;
+            const right = 12;
+            const top = 14;
+            const bottom = 34;
+            const chartWidth = width - left - right;
+            const chartHeight = height - top - bottom;
+            const x = (index: number) =>
+              points.length < 2
+                ? left + chartWidth / 2
+                : left + (index / (points.length - 1)) * chartWidth;
+            const y = (value: number) =>
+              top +
+              chartHeight *
+                (1 - (value - scaleMinimum) / (scaleMaximum - scaleMinimum));
+            const segments: string[][] = [];
+            let segment: string[] = [];
+            values.forEach((value, index) => {
+              if (value === null || !Number.isFinite(value)) {
+                if (segment.length) segments.push(segment);
+                segment = [];
+              } else {
+                segment.push(`${x(index)},${y(value)}`);
+              }
+            });
+            if (segment.length) segments.push(segment);
+            const labelStep = Math.max(1, Math.ceil(points.length / 5));
+
+            return (
+              <section
+                className="min-w-0 rounded-lg border border-slate-100 p-2"
+                key={chart.key}
+              >
+                <h4 className="text-sm font-medium text-slate-700">
+                  {chart.label}
+                </h4>
+                {finiteValues.length ? (
+                  <>
+                    <svg
+                      aria-label={`${chart.label} history for ${locationName}`}
+                      className="h-auto w-full"
+                      role="img"
+                      viewBox={`0 0 ${width} ${height}`}
+                    >
+                      {[0, 0.5, 1].map((fraction) => {
+                        const value =
+                          scaleMaximum -
+                          fraction * (scaleMaximum - scaleMinimum);
+                        const tickY = top + chartHeight * fraction;
+                        return (
+                          <g key={fraction}>
+                            <line
+                              x1={left}
+                              x2={width - right}
+                              y1={tickY}
+                              y2={tickY}
+                              stroke="#e2e8f0"
+                            />
+                            <text
+                              x={left - 5}
+                              y={tickY + 4}
+                              textAnchor="end"
+                              fill="#64748b"
+                              fontSize="9"
+                            >
+                              {value.toFixed(1)}
+                            </text>
+                          </g>
+                        );
+                      })}
+                      {segments.map((segmentPoints, index) => (
+                        <polyline
+                          key={index}
+                          fill="none"
+                          stroke={chart.color}
+                          strokeWidth="2.5"
+                          strokeLinejoin="round"
+                          strokeLinecap="round"
+                          points={segmentPoints.join(" ")}
+                        />
+                      ))}
+                      {values.map((value, index) =>
+                        value === null || !Number.isFinite(value) ? null : (
+                          <circle
+                            key={points[index].month}
+                            cx={x(index)}
+                            cy={y(value)}
+                            r="3"
+                            fill={chart.color}
+                          >
+                            <title>
+                              {points[index].month}: {value.toFixed(3)}{" "}
+                              {chart.unit}
+                            </title>
+                          </circle>
+                        )
+                      )}
+                      {points.map((point, index) =>
+                        index % labelStep === 0 ||
+                        index === points.length - 1 ? (
+                          <text
+                            key={point.month}
+                            x={x(index)}
+                            y={height - 8}
+                            textAnchor="middle"
+                            fill="#64748b"
+                            fontSize="9"
+                          >
+                            {point.month}
+                          </text>
+                        ) : null
+                      )}
+                    </svg>
+                    <p className="text-right text-xs text-slate-500">
+                      {chart.unit}
+                    </p>
+                  </>
+                ) : (
+                  <p className="py-10 text-center text-xs text-slate-500">
+                    No hay valores disponibles en este intervalo.
+                  </p>
+                )}
+              </section>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="py-8 text-center text-sm text-slate-500">{status}</p>
+      )}
+      <p className="mt-2 text-xs text-slate-500">
+        Datos históricos del CSV; los meses sin medición se muestran como
+        espacios. No se estiman valores futuros para estas variables.
+      </p>
+    </article>
+  );
+}
+
 export default function ImergDashboard() {
   const [view, setView] = useState<ViewMode>("actual");
   const [months, setMonths] = useState<string[]>([]);
@@ -387,6 +643,11 @@ export default function ImergDashboard() {
   const [loadedData, setLoadedData] = useState<MonthlyResponse | null>(null);
   const [weatherData, setWeatherData] = useState<WeatherMapResponse | null>(null);
   const [weatherStatus, setWeatherStatus] = useState("");
+  const [moistureData, setMoistureData] = useState<{
+    requestKey: string;
+    series: MoistureSeriesPoint[];
+  } | null>(null);
+  const [moistureStatus, setMoistureStatus] = useState("");
   const [locationSeries, setLocationSeries] = useState<{
     requestKey: string;
     points: LocationSeriesPoint[];
@@ -449,7 +710,11 @@ export default function ImergDashboard() {
           );
         }
 
-        const result = (await response.json()) as { months: string[] };
+        const result = (await response.json()) as {
+          months: string[];
+          training_cutoff?: string;
+          feature_projection?: string;
+        };
         if (!active) return;
         setMonths(result.months);
         setSelectedMonth(result.months.at(-1) ?? "");
@@ -457,7 +722,9 @@ export default function ImergDashboard() {
         setRangeEnd(result.months.at(-1) ?? "");
         setStatus(
           result.months.length
-            ? "Select a month to view its three-month precipitation value."
+            ? view === "prediction" && result.training_cutoff
+              ? `${result.months.length}-month forecast through ${result.months.at(-1)}; features projected from training through ${result.training_cutoff} using seasonal linear regression.`
+              : "Select a month to view its three-month precipitation value."
             : "No monthly data is available for this view."
         );
       } catch (error) {
@@ -621,6 +888,11 @@ export default function ImergDashboard() {
   const currentWeatherData =
     weatherData?.month === selectedMonth ? weatherData : null;
 
+  const moistureRequestKey =
+    selectedLocation && rangeStart && rangeEnd
+      ? `${selectedLocation.id}:${rangeStart}:${rangeEnd}`
+      : "";
+
   useEffect(() => {
     if (
       mapMetric === "precipitation" ||
@@ -665,6 +937,61 @@ export default function ImergDashboard() {
     return () => controller.abort();
   }, [mapMetric, selectedMonth, weatherData]);
 
+  useEffect(() => {
+    if (!selectedLocation || !rangeStart || !rangeEnd) return;
+
+    const location = selectedLocation;
+    const requestKey = `${location.id}:${rangeStart}:${rangeEnd}`;
+    const controller = new AbortController();
+    async function loadMoistureSeries() {
+      setMoistureStatus("Loading moisture history...");
+      try {
+        const query = new URLSearchParams({
+        lat: String(location.grid_lat),
+        lon: String(location.grid_lon),
+          start: rangeStart,
+          end: rangeEnd,
+        });
+        const response = await fetch(`/api/weather?${query}`, {
+          signal: controller.signal,
+        });
+        const result = (await response.json()) as
+          | MoistureSeriesResponse
+          | { error?: string };
+        if (!response.ok) {
+          throw new Error(
+            (result as { error?: string }).error ??
+              `Moisture series request failed (${response.status})`
+          );
+        }
+
+        const data = result as MoistureSeriesResponse;
+        setMoistureData({ requestKey, series: data.series });
+        const availableMonths = data.series.filter((point) =>
+          [
+            point.soil_moisture_index,
+            point.leaf_wetness_index,
+            point.evapotranspiration_mm,
+          ].some((value) => value !== null)
+        ).length;
+        setMoistureStatus(
+          `${availableMonths} months with moisture measurements`
+        );
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setMoistureStatus(
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+    }
+
+    void loadMoistureSeries();
+    return () => controller.abort();
+  }, [rangeEnd, rangeStart, selectedLocation]);
+
+  const visibleMoistureSeries =
+    moistureData?.requestKey === moistureRequestKey ? moistureData.series : [];
+
   const { locations, stats } = useMemo(() => {
     let rows: MapPoint[] = [];
     if (mapMetric === "precipitation") {
@@ -682,7 +1009,13 @@ export default function ImergDashboard() {
               ? row.max_temperature_c
               : mapMetric === "minTemperature"
                 ? row.min_temperature_c
-                : row.relative_humidity_pct;
+                : mapMetric === "humidity"
+                  ? row.relative_humidity_pct
+                  : mapMetric === "soilMoisture"
+                    ? row.soil_moisture_index
+                    : mapMetric === "leafWetness"
+                      ? row.leaf_wetness_index
+                      : row.evapotranspiration_mm;
         return value !== null && Number.isFinite(value)
           ? [{ Lon: row.Lon, Lat: row.Lat, value }]
           : [];
@@ -746,7 +1079,7 @@ export default function ImergDashboard() {
               }}
             >
               <option value="actual">Observado · 2023–2024</option>
-              <option value="prediction">Predicción · 2025</option>
+              <option value="prediction">Predicción · 2025–2026</option>
             </select>
           </label>
           <label className="flex items-center gap-2 text-sm text-slate-700">
@@ -763,6 +1096,9 @@ export default function ImergDashboard() {
               <option value="maxTemperature">Temperatura máxima</option>
               <option value="minTemperature">Temperatura mínima</option>
               <option value="humidity">Humedad</option>
+              <option value="soilMoisture">Humedad del suelo</option>
+              <option value="leafWetness">Humedad foliar</option>
+              <option value="evapotranspiration">Evapotranspiración</option>
             </select>
           </label>
           <label className="flex items-center gap-2 text-sm text-slate-700">
@@ -814,9 +1150,7 @@ export default function ImergDashboard() {
               {months.map((month) => (
                 <option key={month} value={month}>
                   {month}
-                  {isPrediction && month === "2025-10"
-                    ? " · pronóstico con datos de septiembre"
-                    : ""}
+                  {isPrediction ? ` · entrada ${previousMonth(month)}` : ""}
                 </option>
               ))}
             </select>
@@ -905,6 +1239,13 @@ export default function ImergDashboard() {
           locationName={selectedLocation?.name ?? "Sonora"}
           status={seriesStatus}
         />
+        {selectedLocation && (
+          <MoistureHistoryChart
+            points={visibleMoistureSeries}
+            locationName={selectedLocation.name}
+            status={moistureStatus}
+          />
+        )}
         <details className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600">
           <summary className="cursor-pointer font-medium">
             Data source and searchable catalog

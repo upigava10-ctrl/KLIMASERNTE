@@ -31,6 +31,13 @@ MONTHLY_FEATURES_DIRECTORY = DATA_DIRECTORY / "monthly_model_features"
 MONTHLY_TRAINING_DIRECTORY = DATA_DIRECTORY / "2023_2024_monthly_training"
 MONTHLY_VALIDATION_DIRECTORY = DATA_DIRECTORY / "2025_monthly_validation"
 SONORA_LOCATIONS_PATH = BACKEND_DIRECTORY / "sonora_locations.json"
+STATIC_MODEL_FEATURES = {"Lon", "Lat", "Elevation", "dist_to_coast_km"}
+REGRESSION_FEATURES = [
+    feature
+    for feature in MODEL_FEATURES
+    if feature not in STATIC_MODEL_FEATURES | {"month_of_year"}
+]
+PREDICTION_HORIZON_MONTHS = 24
 logger = logging.getLogger(__name__)
 _model: CatBoostRegressor | None = None
 _model_lock = Lock()
@@ -146,6 +153,166 @@ def _get_model() -> CatBoostRegressor:
     return _model
 
 
+@lru_cache(maxsize=1)
+def _training_periods() -> tuple[pd.Period, ...]:
+    """Return contiguous training months used to establish the forecast cutoff."""
+    files = sorted(MONTHLY_TRAINING_DIRECTORY.glob("sonora_imerg_*.parquet"))
+    if not files:
+        raise FileNotFoundError(
+            f"No monthly training data found in {MONTHLY_TRAINING_DIRECTORY}."
+        )
+
+    periods = tuple(
+        pd.Period(path.stem.removeprefix("sonora_imerg_"), freq="M")
+        for path in files
+    )
+    expected = tuple(pd.period_range(periods[0], periods[-1], freq="M"))
+    if periods != expected:
+        raise ValueError("Monthly training data must be contiguous.")
+    if len(periods) < 12:
+        raise ValueError("At least 12 training months are required for projection.")
+    return periods
+
+
+def _prediction_month_bounds() -> tuple[pd.Period, pd.Period, pd.Period]:
+    """Return the 24 target months and the final month used for training."""
+    training_end = _training_periods()[-1]
+    return (
+        training_end + 1,
+        training_end + PREDICTION_HORIZON_MONTHS,
+        training_end,
+    )
+
+
+@lru_cache(maxsize=1)
+def _linearized_feature_frames() -> dict[str, pd.DataFrame]:
+    """Seasonally extrapolate each time-varying model feature by grid cell."""
+    training_periods = _training_periods()
+    training_frames: list[pd.DataFrame] = []
+    grid: np.ndarray | None = None
+
+    for period in training_periods:
+        path = _month_file(MONTHLY_TRAINING_DIRECTORY, period)
+        frame = pd.read_parquet(path)
+        missing = set(MODEL_FEATURES).difference(frame.columns)
+        if missing:
+            raise ValueError(
+                f"Training data for {period} is missing features: "
+                + ", ".join(sorted(missing))
+            )
+        if frame.duplicated(["Lon", "Lat"]).any():
+            raise ValueError(f"Training data for {period} has duplicate grid cells.")
+
+        frame = frame.sort_values(["Lon", "Lat"]).reset_index(drop=True)
+        coordinates = frame[["Lon", "Lat"]].to_numpy(dtype=float)
+        if grid is None:
+            grid = coordinates
+        elif coordinates.shape != grid.shape or not np.allclose(
+            coordinates, grid, rtol=0, atol=1e-8
+        ):
+            raise ValueError(f"Training grid changed in {period}.")
+        training_frames.append(frame)
+
+    if grid is None:
+        raise ValueError("Training data does not contain any grid cells.")
+
+    month_numbers = np.array([period.month for period in training_periods])
+    elapsed_years = np.arange(len(training_periods), dtype=float) / 12
+    angles = 2 * np.pi * (month_numbers - 1) / 12
+    design = np.column_stack(
+        (np.ones(len(training_periods)), elapsed_years, np.sin(angles), np.cos(angles))
+    )
+
+    last_training_month = training_periods[-1]
+    future_periods = tuple(
+        pd.period_range(
+            last_training_month + 1,
+            last_training_month + PREDICTION_HORIZON_MONTHS - 1,
+            freq="M",
+        )
+    )
+    future_elapsed = np.arange(
+        len(training_periods),
+        len(training_periods) + len(future_periods),
+        dtype=float,
+    ) / 12
+    future_angles = 2 * np.pi * (
+        np.array([period.month for period in future_periods]) - 1
+    ) / 12
+    future_design = np.column_stack(
+        (
+            np.ones(len(future_periods)),
+            future_elapsed,
+            np.sin(future_angles),
+            np.cos(future_angles),
+        )
+    )
+
+    projected_features: dict[str, np.ndarray] = {}
+    for feature in REGRESSION_FEATURES:
+        history = np.stack(
+            [
+                frame[feature].to_numpy(dtype=float)
+                for frame in training_frames
+            ]
+        )
+        if not np.isfinite(history).all():
+            raise ValueError(
+                f"Training feature '{feature}' contains non-finite values."
+            )
+
+        coefficients, _, rank, _ = np.linalg.lstsq(design, history, rcond=None)
+        if rank < design.shape[1]:
+            raise ValueError(f"Could not fit a seasonal trend for '{feature}'.")
+        forecasts = future_design @ coefficients
+        forecasts = np.maximum(forecasts, 0)
+        if feature == "probabilityLiquidPrecipitation_mean":
+            forecasts = np.clip(forecasts, 0, 100)
+        elif feature == "rained_previous_3_days_days":
+            forecasts = np.minimum(
+                forecasts,
+                np.array([period.days_in_month for period in future_periods])[:, None],
+            )
+        elif feature.endswith("_cnt_sum"):
+            maximum_counts = np.array(
+                [period.days_in_month * 48 for period in future_periods]
+            )[:, None]
+            forecasts = np.minimum(forecasts, maximum_counts)
+        projected_features[feature] = forecasts
+
+    last_frame = training_frames[-1]
+    forecast_frames: dict[str, pd.DataFrame] = {}
+    for index, period in enumerate(future_periods):
+        frame = last_frame[MODEL_FEATURES].copy()
+        frame["month"] = period.to_timestamp()
+        frame["month_of_year"] = period.month
+        for feature in REGRESSION_FEATURES:
+            frame[feature] = projected_features[feature][index]
+        forecast_frames[str(period)] = frame
+
+    return forecast_frames
+
+
+def _prediction_input_frame(input_month: pd.Period) -> pd.DataFrame:
+    """Load historical features or return the linearized future input month."""
+    training_end = _training_periods()[-1]
+    if input_month <= training_end:
+        path = _month_file(MONTHLY_FEATURES_DIRECTORY, input_month)
+        if not path.is_file():
+            path = _month_file(MONTHLY_TRAINING_DIRECTORY, input_month)
+        if not path.is_file():
+            raise FileNotFoundError(f"Input features for {input_month} were not found.")
+        return pd.read_parquet(path)
+
+    forecast_frames = _linearized_feature_frames()
+    try:
+        return forecast_frames[str(input_month)]
+    except KeyError as error:
+        raise FileNotFoundError(
+            f"Linearized input features for {input_month} are outside the forecast horizon."
+        ) from error
+
+
 def _validate_records(payload: object) -> list[dict[str, float]]:
     """Validate prediction records and return numeric model inputs."""
     if not isinstance(payload, dict) or not isinstance(payload.get("records"), list):
@@ -217,14 +384,19 @@ def register_routes(app: Flask) -> None:
             files = sorted(MONTHLY_TRAINING_DIRECTORY.glob("*.parquet"))
             months = [path.stem.removeprefix("sonora_imerg_") for path in files]
         elif view == "prediction":
-            months = []
-            for month_number in range(1, 11):
-                forecast_month = pd.Period(
-                    year=2025, month=month_number, freq="M"
-                )
-                input_month = forecast_month - 1
-                if _month_file(MONTHLY_FEATURES_DIRECTORY, input_month).is_file():
-                    months.append(str(forecast_month))
+            first_month, last_month, training_end = _prediction_month_bounds()
+            months = [
+                str(month)
+                for month in pd.period_range(first_month, last_month, freq="M")
+            ]
+            return jsonify(
+                {
+                    "view": view,
+                    "months": months,
+                    "training_cutoff": str(training_end),
+                    "feature_projection": "seasonal_linear_regression",
+                }
+            )
         else:
             return jsonify({"error": "view must be 'actual' or 'prediction'."}), 400
 
@@ -272,6 +444,8 @@ def register_routes(app: Flask) -> None:
                         "municipality_code": location["municipality_code"],
                         "lat": location["lat"],
                         "lon": location["lon"],
+                        "grid_lat": location["grid_lat"],
+                        "grid_lon": location["grid_lon"],
                     }
                     for location in matching[:limit]
                 ],
@@ -306,11 +480,8 @@ def register_routes(app: Flask) -> None:
         if view == "actual":
             allowed_start = pd.Period("2023-01", freq="M")
             allowed_end = pd.Period("2024-12", freq="M")
-            directory = MONTHLY_TRAINING_DIRECTORY
         elif view == "prediction":
-            allowed_start = pd.Period("2025-01", freq="M")
-            allowed_end = pd.Period("2025-10", freq="M")
-            directory = MONTHLY_FEATURES_DIRECTORY
+            allowed_start, allowed_end, _ = _prediction_month_bounds()
             if not MODEL_PATH.is_file():
                 return jsonify({"error": "Prediction model is not available."}), 503
         else:
@@ -329,13 +500,18 @@ def register_routes(app: Flask) -> None:
         series: list[dict[str, object]] = []
         for month in pd.period_range(start_month, end_month, freq="M"):
             input_month = month if view == "actual" else month - 1
-            source_path = _month_file(directory, input_month)
-            if not source_path.is_file():
-                return jsonify(
-                    {"error": f"Monthly data for {input_month} was not found."}
-                ), 404
-
-            monthly_data = pd.read_parquet(source_path)
+            if view == "actual":
+                source_path = _month_file(MONTHLY_TRAINING_DIRECTORY, input_month)
+                if not source_path.is_file():
+                    return jsonify(
+                        {"error": f"Monthly data for {input_month} was not found."}
+                    ), 404
+                monthly_data = pd.read_parquet(source_path)
+            else:
+                try:
+                    monthly_data = _prediction_input_frame(input_month)
+                except FileNotFoundError as error:
+                    return jsonify({"error": str(error)}), 404
             if "precipitation_mean" not in monthly_data.columns:
                 return jsonify(
                     {
@@ -423,8 +599,7 @@ def register_routes(app: Flask) -> None:
             allowed_start = pd.Period("2023-01", freq="M")
             allowed_end = pd.Period("2024-12", freq="M")
         elif view == "prediction":
-            allowed_start = pd.Period("2025-01", freq="M")
-            allowed_end = pd.Period("2025-10", freq="M")
+            allowed_start, allowed_end, _ = _prediction_month_bounds()
         else:
             return jsonify({"error": "view must be 'actual' or 'prediction'."}), 400
 
@@ -444,25 +619,23 @@ def register_routes(app: Flask) -> None:
         series: list[dict[str, str | float]] = []
         for month in pd.period_range(start_month, end_month, freq="M"):
             input_month = month if view == "actual" else month - 1
-            directory = (
-                MONTHLY_TRAINING_DIRECTORY
-                if view == "actual"
-                else MONTHLY_FEATURES_DIRECTORY
-            )
-            source_path = _month_file(directory, input_month)
-            if not source_path.is_file():
-                return jsonify(
-                    {"error": f"Monthly data for {input_month} was not found."}
-                ), 404
-
-            monthly_data = pd.read_parquet(source_path)
             if view == "actual":
+                source_path = _month_file(MONTHLY_TRAINING_DIRECTORY, input_month)
+                if not source_path.is_file():
+                    return jsonify(
+                        {"error": f"Monthly data for {input_month} was not found."}
+                    ), 404
+                monthly_data = pd.read_parquet(source_path)
                 if TARGET_COLUMN not in monthly_data:
                     return jsonify(
                         {"error": f"Monthly target for {input_month} is missing."}
                     ), 500
                 target_values = monthly_data[TARGET_COLUMN].to_numpy(dtype=float)
             else:
+                try:
+                    monthly_data = _prediction_input_frame(input_month)
+                except FileNotFoundError as error:
+                    return jsonify({"error": str(error)}), 404
                 missing_features = set(MODEL_FEATURES).difference(
                     monthly_data.columns
                 )
@@ -511,21 +684,17 @@ def register_routes(app: Flask) -> None:
                 return jsonify({"error": "Monthly target column is missing."}), 500
             values = monthly_data[TARGET_COLUMN].to_numpy(dtype=float)
         elif view == "prediction":
-            if requested_month.year != 2025 or requested_month.month > 10:
+            first_month, last_month, _ = _prediction_month_bounds()
+            if requested_month < first_month or requested_month > last_month:
                 return jsonify(
                     {
                         "error": (
-                            "2025 predictions are available for January through "
-                            "October, using data through September."
+                            f"Predictions are available from {first_month} through "
+                            f"{last_month}."
                         )
                     }
                 ), 400
             input_month = requested_month - 1
-            source_path = _month_file(MONTHLY_FEATURES_DIRECTORY, input_month)
-            if not source_path.is_file():
-                return jsonify(
-                    {"error": f"Input features for {input_month} were not found."}
-                ), 404
             if not MODEL_PATH.is_file():
                 return jsonify(
                     {
@@ -533,7 +702,10 @@ def register_routes(app: Flask) -> None:
                         "details": "Train it with Backend/catboost_train.py first.",
                     }
                 ), 503
-            monthly_data = pd.read_parquet(source_path)
+            try:
+                monthly_data = _prediction_input_frame(input_month)
+            except FileNotFoundError as error:
+                return jsonify({"error": str(error)}), 404
             missing_features = set(MODEL_FEATURES).difference(monthly_data.columns)
             if missing_features:
                 return jsonify(
